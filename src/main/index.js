@@ -96,7 +96,7 @@ ipcMain.handle('open-txt', async () => {
   let content = ''
   try {
     content = iconv.decode(buffer, encoding)
-  } catch (err) {
+  } catch {
     content = buffer.toString('utf8') // 如果解码失败，降级用 utf8 试试
   }
 
@@ -105,6 +105,33 @@ ipcMain.handle('open-txt', async () => {
 
   // 5. 返回数据给界面
   return { name, path: filePath, content }
+})
+
+// 书架数据文件的完整路径（放在 userData 目录下，随系统账号隔离）
+function getBookshelfPath() {
+  return join(app.getPath('userData'), 'bookshelf.json')
+}
+
+// 读取书架（返回数组；文件不存在或损坏时返回空书架）
+ipcMain.handle('get-books', async () => {
+  try {
+    const data = await fs.promises.readFile(getBookshelfPath(), 'utf8')
+    const parsed = JSON.parse(data)
+    return Array.isArray(parsed) ? parsed : []
+  } catch {
+    return [] // 首次启动还没有文件，属于正常情况
+  }
+})
+
+// 保存书架（整体覆盖写入）
+ipcMain.handle('save-books', async (_event, books) => {
+  if (!Array.isArray(books)) {
+    throw new Error('save-books 需要传入数组')
+  }
+  // 确保 userData 目录存在（正常情况下 Electron 已创建，这里兜底）
+  await fs.promises.mkdir(app.getPath('userData'), { recursive: true })
+  await fs.promises.writeFile(getBookshelfPath(), JSON.stringify(books, null, 2), 'utf8')
+  return true
 })
 // In this file you can include the rest of your app's specific main process
 // code. You can also put them in separate files and require them here.

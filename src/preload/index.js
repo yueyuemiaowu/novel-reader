@@ -2,7 +2,9 @@ import { contextBridge, ipcRenderer } from 'electron'
 
 // 定义允许界面调用的 API 列表
 const api = {
-  openTxt: () => ipcRenderer.invoke('open-txt')
+  openTxt: () => ipcRenderer.invoke('open-txt'),
+  getBooks: () => ipcRenderer.invoke('get-books'),
+  saveBooks: (books) => ipcRenderer.invoke('save-books', books)
 }
 
 if (process.contextIsolated) {
