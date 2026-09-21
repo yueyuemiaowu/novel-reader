@@ -4,7 +4,8 @@ import { contextBridge, ipcRenderer } from 'electron'
 const api = {
   openTxt: () => ipcRenderer.invoke('open-txt'),
   getBooks: () => ipcRenderer.invoke('get-books'),
-  saveBooks: (books) => ipcRenderer.invoke('save-books', books)
+  saveBooks: (books) => ipcRenderer.invoke('save-books', books),
+  openImage: () => ipcRenderer.invoke('open-image')
 }
 
 if (process.contextIsolated) {

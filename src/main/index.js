@@ -1,4 +1,4 @@
-import { app, shell, BrowserWindow, ipcMain, dialog } from 'electron'
+import { app, shell, BrowserWindow, ipcMain, dialog, nativeImage } from 'electron'
 import { join } from 'path'
 import fs from 'fs'
 import jschardet from 'jschardet'
@@ -105,6 +105,26 @@ ipcMain.handle('open-txt', async () => {
 
   // 5. 返回数据给界面
   return { name, path: filePath, content }
+})
+
+// 打开图片文件作为自定义封面，压缩成宽 300 的缩略图后返回 data URL
+ipcMain.handle('open-image', async () => {
+  const { canceled, filePaths } = await dialog.showOpenDialog({
+    properties: ['openFile'],
+    filters: [{ name: '图片文件', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'] }]
+  })
+
+  if (canceled || filePaths.length === 0) {
+    return null // 用户取消了选择
+  }
+
+  const image = nativeImage.createFromPath(filePaths[0])
+  if (image.isEmpty()) {
+    return null // 文件不是有效图片
+  }
+
+  // 只保留宽 300 的缩略图（长宽比不变），避免把整张大图塞进书架 JSON
+  return image.resize({ width: 300 }).toDataURL()
 })
 
 // 书架数据文件的完整路径（放在 userData 目录下，随系统账号隔离）

@@ -86,12 +86,33 @@ body {
 }
 
 .book-cover {
+  position: relative; /* 为封面上的「换封面」按钮定位 */
   width: 100%;
   height: 200px;
-  background-color: #ddd;
+  background-color: #ddd; /* 兜底色，实际封面由内联样式覆盖 */
   border-radius: 8px;
   margin-bottom: 10px;
   box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+  overflow: hidden; /* 自定义图片用 cover 裁剪时防止溢出圆角 */
+}
+
+.book-cover-edit {
+  position: absolute;
+  right: 6px;
+  bottom: 6px;
+  padding: 3px 8px;
+  border: none;
+  border-radius: 4px;
+  background-color: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  cursor: pointer;
+  font-size: 12px;
+  display: none;
+  z-index: 1;
+}
+
+.book-item:hover .book-cover-edit {
+  display: block;
 }
 
 .book-info h3 {
@@ -376,4 +397,76 @@ body {
 }
 .reader-page.theme-dark .page-indicator {
   color: #bbb;
+}
+
+/* ================= 换封面弹窗 ================= */
+.cover-picker-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  background-color: rgba(0, 0, 0, 0.45);
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.cover-picker {
+  width: 420px;
+  max-width: 90vw;
+  background-color: #fff;
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2);
+  padding: 20px;
+}
+
+.cover-picker-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+}
+
+.cover-picker-header h3 {
+  font-size: 16px;
+}
+
+.cover-picker-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
+.cover-picker-item {
+  height: 80px;
+  border-radius: 6px;
+  cursor: pointer;
+  border: 2px solid transparent;
+  transition: transform 0.15s, border-color 0.15s;
+}
+
+.cover-picker-item:hover {
+  transform: scale(1.05);
+}
+
+.cover-picker-item.active {
+  border-color: #007bff;
+}
+
+.cover-upload-btn {
+  width: 100%;
+  padding: 10px;
+  background-color: #007bff;
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 14px;
+}
+
+.cover-upload-btn:hover {
+  background-color: #0056b3;
 }
