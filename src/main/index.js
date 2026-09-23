@@ -5,6 +5,7 @@ import jschardet from 'jschardet'
 import iconv from 'iconv-lite'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
+import { searchFanqie, importFanqieBook } from './fanqie'
 
 function createWindow() {
   // Create the browser window.
@@ -92,7 +93,7 @@ ipcMain.handle('open-txt', async () => {
   // 3. 检测编码并解码（解决中文乱码）
   const detected = jschardet.detect(buffer)
   const encoding = detected.encoding || 'UTF-8'
-  
+
   let content = ''
   try {
     content = iconv.decode(buffer, encoding)
@@ -152,6 +153,21 @@ ipcMain.handle('save-books', async (_event, books) => {
   await fs.promises.mkdir(app.getPath('userData'), { recursive: true })
   await fs.promises.writeFile(getBookshelfPath(), JSON.stringify(books, null, 2), 'utf8')
   return true
+})
+
+// 番茄小说：按关键词搜索（主进程开隐藏窗口渲染搜索页）
+ipcMain.handle('fanqie-search', async (_event, query) => {
+  if (!query || typeof query !== 'string') return []
+  return await searchFanqie(query.trim())
+})
+
+// 番茄小说：按 bookId 抓取整本书，抓取进度通过 fanqie-import-progress 事件回传
+ipcMain.handle('fanqie-import', async (event, bookId) => {
+  return await importFanqieBook(bookId, (done, total, title) => {
+    if (!event.sender.isDestroyed()) {
+      event.sender.send('fanqie-import-progress', { done, total, title })
+    }
+  })
 })
 // In this file you can include the rest of your app's specific main process
 // code. You can also put them in separate files and require them here.

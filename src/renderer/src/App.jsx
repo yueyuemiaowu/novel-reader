@@ -49,7 +49,11 @@ function hashString(str) {
 // 根据书的封面字段生成背景样式：自定义图片 / 预设渐变 / 兜底
 function getCoverStyle(cover, bookId) {
   if (cover && cover.startsWith('data:')) {
-    return { backgroundImage: `url("${cover}")`, backgroundSize: 'cover', backgroundPosition: 'center' }
+    return {
+      backgroundImage: `url("${cover}")`,
+      backgroundSize: 'cover',
+      backgroundPosition: 'center'
+    }
   }
   if (cover && COVER_PRESETS[cover]) {
     return { background: COVER_PRESETS[cover] }
@@ -62,6 +66,14 @@ function getCoverStyle(cover, bookId) {
 // 稳定的空章节数组：避免 currentBook 为空时每帧生成新数组导致 useMemo 失效
 const EMPTY_CHAPTERS = []
 
+// 从用户输入里识别番茄小说的 bookId：纯数字，或 fanqienovel.com/page/{id} 链接（粘贴链接兜底）
+function extractFanqieBookId(input) {
+  const s = (input || '').trim()
+  if (/^\d{12,22}$/.test(s)) return s
+  const m = s.match(/fanqienovel\.com\/page\/(\d{12,22})/)
+  return m ? m[1] : null
+}
+
 function App() {
   const [page, setPage] = useState('bookshelf')
   const [books, setBooks] = useState([])
@@ -70,6 +82,16 @@ function App() {
   const [showToc, setShowToc] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
   const [coverPickerId, setCoverPickerId] = useState(null) // 正在换封面的书的 id（null = 关闭）
+
+  // 番茄小说导入相关状态
+  const [showFanqie, setShowFanqie] = useState(false) // 是否显示「从番茄导入」弹窗
+  const [fanqieQuery, setFanqieQuery] = useState('')
+  const [fanqieResults, setFanqieResults] = useState([])
+  const [fanqieSearching, setFanqieSearching] = useState(false)
+  const [fanqieImporting, setFanqieImporting] = useState(false)
+  const [fanqieProgress, setFanqieProgress] = useState(null) // { done, total, title }
+  const [fanqieError, setFanqieError] = useState('')
+  const fanqieSearchSeq = useRef(0) // 搜索请求序号，用于丢弃过期（旧关键字）的返回结果
 
   // 章节内分页的状态：pages 是「每页的段落数组」，pageIndex 是当前第几页
   const [pages, setPages] = useState([[]])
@@ -101,7 +123,10 @@ function App() {
   const paragraphs = useMemo(() => {
     const content = chapters[currentChapter]?.content
     if (!content) return []
-    return content.split('\n').map((p) => p.trim()).filter(Boolean)
+    return content
+      .split('\n')
+      .map((p) => p.trim())
+      .filter(Boolean)
   }, [chapters, currentChapter])
 
   // 窗口大小变化时重新分页（拖动窗口会改变每页能放多少内容）
@@ -234,6 +259,121 @@ function App() {
     }
   }
 
+  // 从番茄小说导入一本书（bookId），复用「加书架 + 持久化」逻辑
+  const handleFanqieImport = async (bookId) => {
+    if (!window.api?.fanqieImport) {
+      setFanqieError('window.api 不存在，请检查 preload 配置')
+      return
+    }
+    fanqieSearchSeq.current++ // 使进行中的搜索过期，避免它覆盖导入状态
+    setFanqieSearching(false)
+    setFanqieImporting(true)
+    setFanqieProgress({ done: 0, total: 0, title: '' })
+    setFanqieError('')
+
+    // 订阅抓取进度（返回取消订阅函数）
+    const unsubscribe = window.api.onFanqieImportProgress
+      ? window.api.onFanqieImportProgress((p) => setFanqieProgress(p))
+      : null
+
+    try {
+      const bookData = await window.api.fanqieImport(bookId)
+      if (bookData && Array.isArray(bookData.chapters) && bookData.chapters.length) {
+        const newBook = {
+          id: Date.now().toString(),
+          name: bookData.name || '未命名',
+          fanqieId: bookId,
+          chapters: bookData.chapters,
+          lastChapter: 0,
+          lastPage: 0,
+          cover: bookData.cover || randomCover()
+        }
+        const newBooks = [...booksRef.current, newBook]
+        booksRef.current = newBooks
+        setBooks(newBooks)
+
+        if (window.api?.saveBooks) {
+          try {
+            await window.api.saveBooks(newBooks)
+          } catch (err) {
+            console.error('保存书架失败', err)
+          }
+        }
+
+        alert(`成功导入《${newBook.name}》，共 ${bookData.chapters.length} 章`)
+        setShowFanqie(false)
+        setFanqieResults([])
+        setFanqieQuery('')
+      } else {
+        setFanqieError('导入失败：未获取到章节内容')
+      }
+    } catch (err) {
+      setFanqieError('导入失败：' + (err?.message || err))
+    } finally {
+      if (unsubscribe) unsubscribe()
+      setFanqieImporting(false)
+      setFanqieProgress(null)
+    }
+  }
+
+  // 按关键词搜索番茄（带请求序号，丢弃过期返回）
+  const doFanqieSearch = useCallback(async (q) => {
+    if (!window.api?.fanqieSearch) return
+    const seq = ++fanqieSearchSeq.current
+    setFanqieSearching(true)
+    setFanqieError('')
+    try {
+      const results = await window.api.fanqieSearch(q)
+      if (seq !== fanqieSearchSeq.current) return // 已被更新的搜索取代
+      setFanqieResults(Array.isArray(results) ? results : [])
+      if (!Array.isArray(results) || results.length === 0) {
+        setFanqieError('没有搜到相关书籍')
+      }
+    } catch (err) {
+      if (seq !== fanqieSearchSeq.current) return
+      setFanqieError('搜索失败：' + (err?.message || err))
+    } finally {
+      if (seq === fanqieSearchSeq.current) setFanqieSearching(false)
+    }
+  }, [])
+
+  // 番茄搜索：输入是 bookId/链接则直接导入，否则按关键词搜索
+  const handleFanqieSearch = async () => {
+    const q = fanqieQuery.trim()
+    if (!q || fanqieImporting) return
+    setFanqieError('')
+
+    const bookId = extractFanqieBookId(q)
+    if (bookId) {
+      setFanqieResults([])
+      await handleFanqieImport(bookId)
+      return
+    }
+    await doFanqieSearch(q)
+  }
+
+  // 输入变化：更新关键字；清空时同时清掉候选列表
+  const onFanqieQueryChange = (e) => {
+    const v = e.target.value
+    setFanqieQuery(v)
+    if (!v.trim()) {
+      fanqieSearchSeq.current++ // 使进行中的搜索过期
+      setFanqieSearching(false)
+      setFanqieResults([])
+      setFanqieError('')
+    }
+  }
+
+  // 输入防抖：停顿 400ms 后自动搜索，实时刷新「当前关键字有哪些可选书目」
+  useEffect(() => {
+    if (!showFanqie) return
+    const q = fanqieQuery.trim()
+    // 空输入、正在导入、或纯 bookId/链接（等点搜索按钮）时不自动搜
+    if (!q || fanqieImporting || extractFanqieBookId(q)) return
+    const timer = setTimeout(() => doFanqieSearch(q), 400)
+    return () => clearTimeout(timer)
+  }, [fanqieQuery, showFanqie, fanqieImporting, doFanqieSearch])
+
   const openBook = (book) => {
     setCurrentBook(book)
     // 恢复到上次阅读的章节和页码
@@ -360,16 +500,46 @@ function App() {
         // ================= 书架页 =================
         <div className="bookshelf-page">
           <h1>我的书架</h1>
-          <button className="import-btn" onClick={handleImportTxt}>导入小说</button>
+          <div className="import-actions">
+            <button className="import-btn" onClick={handleImportTxt}>
+              导入本地小说
+            </button>
+            <button
+              className="import-btn import-btn-fanqie"
+              onClick={() => {
+                setShowFanqie(true)
+                setFanqieError('')
+                setFanqieResults([])
+              }}
+            >
+              从番茄导入
+            </button>
+          </div>
           <div className="book-list">
             {books.length === 0 ? (
               <p style={{ color: '#999', marginTop: '20px' }}>书架空空如也，点击上方按钮导入吧！</p>
             ) : (
               books.map((book) => (
                 <div className="book-item" key={book.id} onClick={() => openBook(book)}>
-                  <button className="book-delete" onClick={(e) => { e.stopPropagation(); deleteBook(book.id) }}>✕</button>
+                  <button
+                    className="book-delete"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      deleteBook(book.id)
+                    }}
+                  >
+                    ✕
+                  </button>
                   <div className="book-cover" style={getCoverStyle(book.cover, book.id)}>
-                    <button className="book-cover-edit" onClick={(e) => { e.stopPropagation(); setCoverPickerId(book.id) }}>换封面</button>
+                    <button
+                      className="book-cover-edit"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        setCoverPickerId(book.id)
+                      }}
+                    >
+                      换封面
+                    </button>
                   </div>
                   <div className="book-info">
                     <h3>{book.name}</h3>
@@ -386,7 +556,9 @@ function App() {
               <div className="cover-picker" onClick={(e) => e.stopPropagation()}>
                 <div className="cover-picker-header">
                   <h3>更换封面</h3>
-                  <button className="close-toc" onClick={() => setCoverPickerId(null)}>✕</button>
+                  <button className="close-toc" onClick={() => setCoverPickerId(null)}>
+                    ✕
+                  </button>
                 </div>
                 <div className="cover-picker-grid">
                   {COVER_KEYS.map((key) => (
@@ -398,7 +570,118 @@ function App() {
                     />
                   ))}
                 </div>
-                <button className="cover-upload-btn" onClick={handleUploadCover}>上传自定义图片</button>
+                <button className="cover-upload-btn" onClick={handleUploadCover}>
+                  上传自定义图片
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* 从番茄导入弹窗 */}
+          {showFanqie && (
+            <div
+              className="fanqie-overlay"
+              onClick={() => {
+                if (!fanqieImporting) setShowFanqie(false)
+              }}
+            >
+              <div className="fanqie-modal" onClick={(e) => e.stopPropagation()}>
+                <div className="fanqie-header">
+                  <h3>从番茄小说导入</h3>
+                  <button
+                    className="close-toc"
+                    onClick={() => {
+                      if (!fanqieImporting) setShowFanqie(false)
+                    }}
+                  >
+                    ✕
+                  </button>
+                </div>
+
+                <div className="fanqie-search-row">
+                  <input
+                    className="fanqie-input"
+                    type="text"
+                    placeholder="输入书名，或粘贴 book_id / 链接"
+                    value={fanqieQuery}
+                    onChange={onFanqieQueryChange}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') handleFanqieSearch()
+                    }}
+                    disabled={fanqieImporting}
+                  />
+                  <button
+                    className="fanqie-search-btn"
+                    onClick={handleFanqieSearch}
+                    disabled={fanqieSearching || fanqieImporting || !fanqieQuery.trim()}
+                  >
+                    {fanqieSearching ? '搜索中…' : '搜索'}
+                  </button>
+                </div>
+
+                {fanqieError && <p className="fanqie-error">{fanqieError}</p>}
+
+                {fanqieImporting ? (
+                  <div className="fanqie-progress">
+                    <div className="fanqie-progress-bar">
+                      <div
+                        className="fanqie-progress-fill"
+                        style={{
+                          width:
+                            fanqieProgress && fanqieProgress.total > 0
+                              ? `${Math.round((fanqieProgress.done / fanqieProgress.total) * 100)}%`
+                              : '0%'
+                        }}
+                      />
+                    </div>
+                    <p className="fanqie-progress-text">
+                      {fanqieProgress
+                        ? `${fanqieProgress.done}/${fanqieProgress.total} · ${fanqieProgress.title || '抓取中…'}`
+                        : '抓取中…'}
+                    </p>
+                  </div>
+                ) : fanqieSearching ? (
+                  <p className="fanqie-hint">正在搜索…</p>
+                ) : fanqieResults.length > 0 ? (
+                  <div className="fanqie-results">
+                    {fanqieResults.map((r) => (
+                      <div
+                        className="fanqie-result"
+                        key={r.bookId}
+                        onClick={() => handleFanqieImport(r.bookId)}
+                      >
+                        <div
+                          className="fanqie-result-cover"
+                          style={{
+                            background:
+                              COVER_PRESETS[COVER_KEYS[hashString(r.bookId) % COVER_KEYS.length]]
+                          }}
+                        >
+                          {r.coverUrl && (
+                            <img
+                              src={r.coverUrl}
+                              alt=""
+                              referrerPolicy="no-referrer"
+                              onError={(e) => {
+                                e.currentTarget.style.display = 'none'
+                              }}
+                            />
+                          )}
+                        </div>
+                        <div className="fanqie-result-info">
+                          <h4>{r.name}</h4>
+                          <p className="fanqie-result-meta">
+                            {r.author ? `${r.author} · ` : ''}
+                            {r.wordCount ? `${(r.wordCount / 10000).toFixed(1)}万字` : ''}
+                          </p>
+                          {r.abstract && <p className="fanqie-result-abstract">{r.abstract}</p>}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : !fanqieError ? (
+                  <p className="fanqie-hint">输入书名后自动搜索，点击下方书目即可导入</p>
+                ) : null}
               </div>
             </div>
           )}
@@ -407,11 +690,29 @@ function App() {
         // ================= 阅读页 =================
         <div className={`reader-page theme-${settings.theme}`}>
           <div className="reader-header">
-            <button className="back-btn" onClick={goBack}>返回</button>
+            <button className="back-btn" onClick={goBack}>
+              返回
+            </button>
             <h2>{currentBook?.chapters[currentChapter]?.title}</h2>
             <div className="header-actions">
-              <button className="toc-btn" onClick={() => { setShowToc(!showToc); setShowSettings(false) }}>目录</button>
-              <button className="toc-btn" onClick={() => { setShowSettings(!showSettings); setShowToc(false) }}>设置</button>
+              <button
+                className="toc-btn"
+                onClick={() => {
+                  setShowToc(!showToc)
+                  setShowSettings(false)
+                }}
+              >
+                目录
+              </button>
+              <button
+                className="toc-btn"
+                onClick={() => {
+                  setShowSettings(!showSettings)
+                  setShowToc(false)
+                }}
+              >
+                设置
+              </button>
             </div>
           </div>
 
@@ -434,9 +735,7 @@ function App() {
             style={{ fontSize: FONT_SIZES[settings.fontSize], lineHeight: settings.lineHeight }}
           >
             {(pages[safePageIndex] || []).length > 0 ? (
-              pages[safePageIndex].map((paragraph, index) => (
-                <p key={index}>{paragraph}</p>
-              ))
+              pages[safePageIndex].map((paragraph, index) => <p key={index}>{paragraph}</p>)
             ) : (
               <p>没有内容</p>
             )}
@@ -444,11 +743,33 @@ function App() {
 
           {/* 底部翻页栏 */}
           <div className="reader-footer">
-            <button className="nav-btn" onClick={() => changeChapter(currentChapter - 1)} disabled={currentChapter === 0}>上一章</button>
-            <button className="nav-btn" onClick={() => turnPage(-1)} disabled={safePageIndex === 0}>上一页</button>
-            <span className="page-indicator">{safePageIndex + 1} / {totalPages}</span>
-            <button className="nav-btn" onClick={() => turnPage(1)} disabled={safePageIndex >= totalPages - 1}>下一页</button>
-            <button className="nav-btn" onClick={() => changeChapter(currentChapter + 1)} disabled={!currentBook || currentChapter >= currentBook.chapters.length - 1}>下一章</button>
+            <button
+              className="nav-btn"
+              onClick={() => changeChapter(currentChapter - 1)}
+              disabled={currentChapter === 0}
+            >
+              上一章
+            </button>
+            <button className="nav-btn" onClick={() => turnPage(-1)} disabled={safePageIndex === 0}>
+              上一页
+            </button>
+            <span className="page-indicator">
+              {safePageIndex + 1} / {totalPages}
+            </span>
+            <button
+              className="nav-btn"
+              onClick={() => turnPage(1)}
+              disabled={safePageIndex >= totalPages - 1}
+            >
+              下一页
+            </button>
+            <button
+              className="nav-btn"
+              onClick={() => changeChapter(currentChapter + 1)}
+              disabled={!currentBook || currentChapter >= currentBook.chapters.length - 1}
+            >
+              下一章
+            </button>
           </div>
 
           {/* 目录侧边栏 */}
@@ -456,11 +777,17 @@ function App() {
             <div className="toc-sidebar">
               <div className="toc-header">
                 <h3>目录</h3>
-                <button className="close-toc" onClick={() => setShowToc(false)}>✕</button>
+                <button className="close-toc" onClick={() => setShowToc(false)}>
+                  ✕
+                </button>
               </div>
               <div className="toc-list">
                 {currentBook?.chapters.map((chapter, index) => (
-                  <div key={index} className={`toc-item ${index === currentChapter ? 'active' : ''}`} onClick={() => changeChapter(index)}>
+                  <div
+                    key={index}
+                    className={`toc-item ${index === currentChapter ? 'active' : ''}`}
+                    onClick={() => changeChapter(index)}
+                  >
                     {chapter.title}
                   </div>
                 ))}
@@ -473,7 +800,9 @@ function App() {
             <div className="settings-sidebar">
               <div className="settings-header">
                 <h3>阅读设置</h3>
-                <button className="close-toc" onClick={() => setShowSettings(false)}>✕</button>
+                <button className="close-toc" onClick={() => setShowSettings(false)}>
+                  ✕
+                </button>
               </div>
               <div className="settings-body">
                 <div className="setting-group">
